@@ -709,13 +709,13 @@ fn optimize_raw(
 
             if filters.is_empty() {
                 // Pick a filter automatically
-                if png.ihdr.bit_depth as u8 >= 8 {
-                    // Bigrams is the best all-rounder when there's at least one byte per pixel
-                    filters.insert(RowFilter::Bigrams);
-                } else {
-                    // Otherwise delta filters generally don't work well, so just stick with None
-                    filters.insert(RowFilter::None);
-                }
+                // Bigrams is the best all-rounder when there's at least one byte per pixel
+                // Otherwise delta filters generally don't work well, so just stick with None
+                filters.insert(match &png.ihdr.color_type {
+                    ColorType::Indexed { palette } if palette.len() <= 192 => RowFilter::None,
+                    _ if (png.ihdr.bit_depth as u8) < 8 => RowFilter::None,
+                    _ => RowFilter::Bigrams,
+                });
             }
 
             debug!("Trying: {} filters", filters.len());
