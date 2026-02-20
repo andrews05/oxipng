@@ -374,8 +374,8 @@ impl PngImage {
         // For heuristic strategies, keep track of the actual filter used for each line
         let mut filters_used = Vec::new();
         // Pre-allocate buffers for the Bigrams strategy to avoid per-line allocations
-        let (mut bigram_seen, mut bigram_touched) = if matches!(strategy, FilterStrategy::Bigrams) {
-            (vec![false; 0x10000], Vec::<u16>::new())
+        let (mut bigram_seen, mut bigram_touched) = if matches!(strategy, FilterStrategy::Bigrams | FilterStrategy::BigEnt) {
+            (vec![0u32; 0x10000], Vec::<u16>::new())
         } else {
             (Vec::new(), Vec::new())
         };
@@ -473,12 +473,12 @@ impl PngImage {
                             let mut count = 0;
                             for pair in f_buf.windows(2) {
                                 let bigram = ((pair[0] as usize) << 8) | pair[1] as usize;
-                                if !bigram_seen[bigram] {
+                                if bigram_seen[bigram] == 0 {
                                     count += 1;
                                     if count >= best_size {
                                         break;
                                     }
-                                    bigram_seen[bigram] = true;
+                                    bigram_seen[bigram] = 1;
                                     bigram_touched.push(bigram as u16);
                                 }
                             }
@@ -490,7 +490,7 @@ impl PngImage {
                             }
                             // Clear only the entries that were touched
                             for &idx in &bigram_touched {
-                                bigram_seen[idx as usize] = false;
+                                bigram_seen[idx as usize] = 0;
                             }
                             bigram_touched.clear();
                         }
@@ -498,16 +498,21 @@ impl PngImage {
                     FilterStrategy::BigEnt => {
                         // Bigram entropy, combined from Entropy and Bigrams filters
                         let mut best_size = i32::MIN;
-                        // FxHasher is the fastest rust hasher currently available for this purpose
-                        let mut counts = FxHashMap::<u16, u32>::default();
                         for f in try_filters {
                             f.filter_line(bpp, &mut line_data, &prev_line, &mut f_buf, alpha_bytes);
-                            counts.clear();
                             for pair in f_buf.windows(2) {
-                                let bigram = (u16::from(pair[0]) << 8) | u16::from(pair[1]);
-                                counts.entry(bigram).and_modify(|e| *e += 1).or_insert(1);
+                                let bigram = ((pair[0] as usize) << 8) | pair[1] as usize;
+                                if bigram_seen[bigram] == 0 {
+                                    bigram_touched.push(bigram as u16);
+                                }
+                                bigram_seen[bigram] += 1;
                             }
-                            let size = counts.values().fold(0, |acc, &x| acc + ilog2i(x)) as i32;
+                            let mut size = 0;
+                            for &idx in &bigram_touched {
+                                size += ilog2i(bigram_seen[idx as usize]) as i32;
+                                bigram_seen[idx as usize] = 0;
+                            }
+                            bigram_touched.clear();
                             if size > best_size {
                                 best_size = size;
                                 std::mem::swap(&mut best_line, &mut f_buf);
