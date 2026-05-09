@@ -477,13 +477,9 @@ fn create_xyz_tag(xyz: [f64; 3], tags: &mut Vec<u8>) {
 }
 
 fn create_chad_tag(tags: &mut Vec<u8>) {
-    // Bradford chromatic adaptation from D65 to D50 (standard sRGB chad matrix)
-    #[rustfmt::skip]
-    let chad: [[f64; 3]; 3] = [
-        [ 1.0479, 0.0229, -0.0502],
-        [ 0.0296, 0.9904, -0.0171],
-        [-0.0092, 0.0150,  0.7521],
-    ];
+    // Compute the Bradford chromatic adaptation matrix from D65 to D50,
+    // using the same algorithm as jpegli (AdaptToXYZD50).
+    let chad = compute_bradford_chad(0.3127, 0.3290);
 
     push_tag(b"sf32", tags);
     push_u32(0, tags); // reserved
@@ -492,6 +488,62 @@ fn create_chad_tag(tags: &mut Vec<u8>) {
             push_s15fixed16(v, tags);
         }
     }
+}
+
+/// Compute the Bradford chromatic adaptation matrix from a source white point
+/// (given as CIE xy chromaticity) to the D50 illuminant used by ICC PCS.
+///
+/// This is a direct port of jpegli's `AdaptToXYZD50`.
+fn compute_bradford_chad(wx: f64, wy: f64) -> [[f64; 3]; 3] {
+    #[rustfmt::skip]
+    const BRADFORD: [[f64; 3]; 3] = [
+        [ 0.8951,  0.2664, -0.1614],
+        [-0.7502,  1.7135,  0.0367],
+        [ 0.0389, -0.0685,  1.0296],
+    ];
+    #[rustfmt::skip]
+    const BRADFORD_INV: [[f64; 3]; 3] = [
+        [ 0.9869929, -0.1470543,  0.1599627],
+        [ 0.4323053,  0.5183603,  0.0492912],
+        [-0.0085287,  0.0400428,  0.9684867],
+    ];
+
+    // Source white point in XYZ
+    let w = [wx / wy, 1.0, (1.0 - wx - wy) / wy];
+    // D50 white point in XYZ
+    let w50 = [0.96422, 1.0, 0.82521];
+
+    let lms = mat3_vec(&BRADFORD, &w);
+    let lms50 = mat3_vec(&BRADFORD, &w50);
+
+    // Diagonal adaptation
+    let diag = [
+        [lms50[0] / lms[0], 0.0, 0.0],
+        [0.0, lms50[1] / lms[1], 0.0],
+        [0.0, 0.0, lms50[2] / lms[2]],
+    ];
+
+    // chad = bradford_inv × diag × bradford
+    let tmp = mat3_mul(&diag, &BRADFORD);
+    mat3_mul(&BRADFORD_INV, &tmp)
+}
+
+fn mat3_vec(m: &[[f64; 3]; 3], v: &[f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut r = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    r
 }
 
 fn create_curv_para_tag(params: &[f64], curve_type: u16, tags: &mut Vec<u8>) {
