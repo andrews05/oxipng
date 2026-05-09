@@ -565,7 +565,10 @@ fn create_a2b0_tag_for_xyb(tags: &mut Vec<u8>) {
     // 3 curves × 32 = 96 bytes → ends at offset 244
     debug_assert_eq!(tags.len() - base, 148);
     for i in 0..3 {
-        let b = -XYB_OFFSET[i] - (-NEG_OPSIN_ABSORBANCE_BIAS_RGB[i]).cbrt();
+        // jpegli: b = -kXYBOffset[i] - std::cbrt(kNegOpsinAbsorbanceBiasRGB[i])
+        // kNegOpsinAbsorbanceBiasRGB[i] is negative, so cbrt is negative,
+        // and subtracting a negative adds: b = -offset + cbrt(bias)
+        let b = -XYB_OFFSET[i] - NEG_OPSIN_ABSORBANCE_BIAS_RGB[i].cbrt();
         let params = [
             3.0,                              // gamma (cube)
             1.0 / XYB_SCALE[i],               // a
