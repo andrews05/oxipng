@@ -366,6 +366,15 @@ fn parse_opts_into_struct(
 
     opts.idat_recoding = !matches.get_flag("no-recoding");
 
+    opts.xyb = matches.get_flag("xyb");
+    if opts.xyb {
+        // XYB conversion changes the color space entirely; disable reductions
+        // that would misinterpret the data
+        opts.color_type_reduction = false;
+        opts.grayscale_reduction = false;
+        opts.palette_reduction = false;
+    }
+
     if let Some(x) = matches.get_one::<String>("interlace") {
         opts.interlace = match x.as_str() {
             "off" | "0" => Some(false),

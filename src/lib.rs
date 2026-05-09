@@ -54,6 +54,7 @@ mod png;
 mod reduction;
 #[cfg(feature = "sanity-checks")]
 mod sanity_checks;
+mod xyb;
 
 /// Private to oxipng; don't use outside tests and benches
 #[doc(hidden)]
@@ -185,6 +186,11 @@ pub fn optimize(input: &InFile, output: &OutFile, opts: &Options) -> Optimizatio
 
     let mut png = PngData::from_slice(&in_data, opts)?;
 
+    // Convert to XYB color space if requested
+    if opts.xyb {
+        xyb::apply_xyb_conversion(&mut png)?;
+    }
+
     // Run the optimizer on the decoded PNG.
     let mut optimized_output = optimize_png(&mut png, &in_data, opts, deadline)?;
 
@@ -292,6 +298,11 @@ pub fn optimize_from_memory(data: &[u8], opts: &Options) -> PngResult<Vec<u8>> {
 
     let original_size = data.len();
     let mut png = PngData::from_slice(data, opts)?;
+
+    // Convert to XYB color space if requested
+    if opts.xyb {
+        xyb::apply_xyb_conversion(&mut png)?;
+    }
 
     // Run the optimizer on the decoded PNG.
     let optimized_output = optimize_png(&mut png, data, opts, deadline)?;

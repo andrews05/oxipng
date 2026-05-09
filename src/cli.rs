@@ -343,6 +343,14 @@ be processed successfully. The output will always have correct checksums.")
                 .action(ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("xyb")
+                .help("Convert image to XYB color space and embed ICC profile")
+                .long_help("\
+Convert the image from sRGB to the XYB color space used by JPEG XL, and embed \nan ICC profile that allows ICC-aware software to convert back for display. \nThis is a lossy conversion due to 8-bit quantization of the XYB values. \nAlpha channels are dropped. The input must be 8-bit sRGB.")
+                .long("xyb")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("zopfli")
                 .help("Use the much slower but stronger Zopfli compressor")
                 .long_help("\

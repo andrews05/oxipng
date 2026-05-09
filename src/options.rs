@@ -159,6 +159,11 @@ pub struct Options {
     ///
     /// Default: `None`
     pub max_decompressed_size: Option<usize>,
+    /// Whether to convert the image to the XYB color space (used by JPEG XL)
+    /// and embed an appropriate ICC profile.
+    ///
+    /// Default: `false`
+    pub xyb: bool,
 }
 
 impl Options {
@@ -298,6 +303,7 @@ impl Default for Options {
             fast_evaluation: true,
             timeout: None,
             max_decompressed_size: None,
+            xyb: false,
         }
     }
 }
