@@ -129,12 +129,14 @@ fn linear_rgb_to_scaled_xyb(r: f64, g: f64, b: f64) -> [f64; 3] {
 /// Convert an 8-bit sRGB PNG image to scaled XYB.
 ///
 /// The image must be RGB, RGBA, Grayscale, or GrayscaleAlpha with 8-bit depth.
-/// Alpha is dropped during conversion (XYB is 3-channel).
-/// Returns a new `PngImage` with RGB color type and the pixel data in XYB.
+/// Alpha is preserved when present (the ICC profile covers only the 3 color
+/// channels; alpha passes through unchanged).
+/// Returns a new `PngImage` with the pixel data in XYB.
 pub fn convert_to_xyb(image: &PngImage) -> PngResult<PngImage> {
     use crate::colors::{BitDepth, ColorType};
 
     let channels = image.ihdr.color_type.channels_per_pixel() as usize;
+    let has_alpha = image.ihdr.color_type.has_alpha();
     let is_gray = image.ihdr.color_type.is_gray();
 
     if image.ihdr.bit_depth != BitDepth::Eight {
@@ -146,9 +148,9 @@ pub fn convert_to_xyb(image: &PngImage) -> PngResult<PngImage> {
     let width = image.ihdr.width as usize;
     let height = image.ihdr.height as usize;
     let pixels = width * height;
+    let out_channels = if has_alpha { 4 } else { 3 };
 
-    // Output: 3 channels (RGB holding XYB), 8 bits
-    let mut out = Vec::with_capacity(pixels * 3);
+    let mut out = Vec::with_capacity(pixels * out_channels);
 
     for i in 0..pixels {
         let offset = i * channels;
@@ -177,15 +179,27 @@ pub fn convert_to_xyb(image: &PngImage) -> PngResult<PngImage> {
         for &v in &xyb {
             out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
         }
+
+        // Preserve alpha unchanged
+        if has_alpha {
+            let alpha_offset = if is_gray { offset + 1 } else { offset + 3 };
+            out.push(image.data[alpha_offset]);
+        }
     }
+
+    let color_type = if has_alpha {
+        ColorType::RGBA
+    } else {
+        ColorType::RGB {
+            transparent_color: None,
+        }
+    };
 
     Ok(PngImage {
         ihdr: crate::headers::IhdrData {
             width: image.ihdr.width,
             height: image.ihdr.height,
-            color_type: ColorType::RGB {
-                transparent_color: None,
-            },
+            color_type,
             bit_depth: BitDepth::Eight,
             interlaced: image.ihdr.interlaced,
         },
