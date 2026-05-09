@@ -133,11 +133,10 @@ fn linear_rgb_to_scaled_xyb(r: f64, g: f64, b: f64) -> [f64; 3] {
 /// channels; alpha passes through unchanged).
 /// Returns a new `PngImage` with the pixel data in XYB.
 pub fn convert_to_xyb(image: &PngImage) -> PngResult<PngImage> {
-    use crate::colors::{BitDepth, ColorType};
+    use crate::colors::BitDepth;
 
     let channels = image.ihdr.color_type.channels_per_pixel() as usize;
     let has_alpha = image.ihdr.color_type.has_alpha();
-    let is_gray = image.ihdr.color_type.is_gray();
 
     if image.ihdr.bit_depth != BitDepth::Eight {
         return Err(PngError::new(
@@ -145,27 +144,23 @@ pub fn convert_to_xyb(image: &PngImage) -> PngResult<PngImage> {
         ));
     }
 
-    let width = image.ihdr.width as usize;
-    let height = image.ihdr.height as usize;
-    let pixels = width * height;
-    let out_channels = if has_alpha { 4 } else { 3 };
+    if !image.ihdr.color_type.is_rgb() {
+        return Err(PngError::new(
+            "XYB conversion currently only supports RGB(A) images",
+        ));
+    }
 
-    let mut out = Vec::with_capacity(pixels * out_channels);
+    let mut out = Vec::with_capacity(image.data.len());
 
-    for i in 0..pixels {
+    for i in 0..(image.data.len() / channels) {
         let offset = i * channels;
 
         // Read source pixel
-        let (sr, sg, sb) = if is_gray {
-            let g = image.data[offset];
-            (g, g, g)
-        } else {
-            (
-                image.data[offset],
-                image.data[offset + 1],
-                image.data[offset + 2],
-            )
-        };
+        let (sr, sg, sb) = (
+            image.data[offset],
+            image.data[offset + 1],
+            image.data[offset + 2],
+        );
 
         // sRGB gamma decode → linear
         let lr = srgb_to_linear(sr as f64 / 255.0);
@@ -182,25 +177,16 @@ pub fn convert_to_xyb(image: &PngImage) -> PngResult<PngImage> {
 
         // Preserve alpha unchanged
         if has_alpha {
-            let alpha_offset = if is_gray { offset + 1 } else { offset + 3 };
-            out.push(image.data[alpha_offset]);
+            out.push(image.data[offset + 3]);
         }
     }
-
-    let color_type = if has_alpha {
-        ColorType::RGBA
-    } else {
-        ColorType::RGB {
-            transparent_color: None,
-        }
-    };
 
     Ok(PngImage {
         ihdr: crate::headers::IhdrData {
             width: image.ihdr.width,
             height: image.ihdr.height,
-            color_type,
-            bit_depth: BitDepth::Eight,
+            color_type: image.ihdr.color_type.clone(),
+            bit_depth: image.ihdr.bit_depth,
             interlaced: image.ihdr.interlaced,
         },
         data: out,
