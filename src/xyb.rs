@@ -214,7 +214,7 @@ pub fn create_xyb_icc_profile() -> Vec<u8> {
     let mut tag_size: usize = 0;
 
     // desc
-    create_mluc_tag("RGB_D65_SRG_Rel_Lin XYB", &mut tags);
+    create_mluc_tag("XYB", &mut tags);
     finalize_tag(&mut tags, &mut tag_offset, &mut tag_size);
     add_to_tag_table(b"desc", tag_offset, tag_size, &mut tagtable, &mut offsets);
 
