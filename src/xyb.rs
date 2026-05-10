@@ -463,9 +463,13 @@ fn create_xyz_tag(xyz: [f64; 3], tags: &mut Vec<u8>) {
 }
 
 fn create_chad_tag(tags: &mut Vec<u8>) {
-    // Compute the Bradford chromatic adaptation matrix from D65 to D50,
-    // using the same algorithm as jpegli (AdaptToXYZD50).
-    let chad = compute_bradford_chad(0.3127, 0.3290);
+    // Bradford chromatic adaptation from D65 to D50 (standard sRGB chad matrix)
+    #[rustfmt::skip]
+    let chad: [[f64; 3]; 3] = [
+        [ 1.04785156, 0.02290344, -0.05015564],
+        [ 0.02957153, 0.99047852, -0.01705933],
+        [-0.00924683, 0.01506042,  0.75196838],
+    ];
 
     push_tag(b"sf32", tags);
     push_u32(0, tags); // reserved
