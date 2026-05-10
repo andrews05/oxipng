@@ -5,7 +5,7 @@
 //! the scaled XYB representation, and an ICC profile is embedded so that
 //! ICC-aware software can convert back to a displayable color space.
 
-use crate::headers::{Chunk, make_iccp};
+use crate::headers::Chunk;
 use crate::png::{PngData, PngImage};
 use crate::{Deflater, PngError, PngResult};
 use std::sync::Arc;
@@ -276,12 +276,28 @@ pub fn create_xyb_icc_profile() -> Vec<u8> {
     icc
 }
 
+/// Pre-compressed (zlib) copy of the XYB ICC profile.
+///
+/// This is the output of `create_xyb_icc_profile()` compressed at the
+/// maximum zlib level.  Embedding it avoids having to build and compress
+/// the profile at runtime.
+static XYB_ICC_ZLIB: &[u8] = include_bytes!("XYB.icc.zlib");
+
 /// Build an iCCP chunk containing the XYB ICC profile.
 pub fn make_xyb_iccp_chunk() -> Chunk {
-    let icc = create_xyb_icc_profile();
-    // Use fast compression; oxipng will recompress during optimization.
-    let deflater = Deflater::Libdeflater { compression: 1 };
-    make_iccp(&icc, deflater, None).expect("failed to compress XYB ICC profile")
+    // The iCCP chunk data layout is:
+    //   profile-name  ("icc")      3 bytes
+    //   null separator             1 byte
+    //   compression method (0)     1 byte
+    //   compressed profile data    N bytes
+    let mut data = Vec::with_capacity(XYB_ICC_ZLIB.len() + 5);
+    data.extend(b"icc"); // Profile name
+    data.extend([0, 0]); // Null separator, zlib compression method
+    data.extend_from_slice(XYB_ICC_ZLIB);
+    Chunk {
+        name: *b"iCCP",
+        data,
+    }
 }
 
 /// Apply XYB conversion to a `PngData` in-place.
@@ -816,6 +832,20 @@ mod tests {
         // Profile version 4.4 at offset 8
         assert_eq!(icc[8], 0x04);
         assert_eq!(icc[9], 0x40);
+    }
+
+    #[test]
+    fn test_precompressed_icc_matches_constructed() {
+        // Ensure the embedded pre-compressed blob is the zlib encoding of
+        // the profile built by create_xyb_icc_profile().  If the profile
+        // construction code changes, regenerate XYB.icc.zlib.
+        let constructed = create_xyb_icc_profile();
+        let decompressed = crate::deflate::inflate(XYB_ICC_ZLIB, constructed.len())
+            .expect("failed to decompress XYB.icc.zlib");
+        assert_eq!(
+            constructed, decompressed,
+            "XYB.icc.zlib is out of date – regenerate it from the output of create_xyb_icc_profile()"
+        );
     }
 
     #[test]
