@@ -381,7 +381,8 @@ conjunction with a high value for '--zi' to achieve better compression in reason
                 .hide_short_help(true)
                 .long_help("\
 Set the libdeflate compression level to use with the Brute filter strategy. Sane values \
-are 1-5. Higher values are not necessarily better.")
+are 1-7. Higher values are not necessarily better.
+Level 7 and higher will try all delta filter combinations for two lines at a time.")
                 .long("brute-level")
                 .value_name("level")
                 .value_parser(1..=12),
@@ -390,8 +391,8 @@ are 1-5. Higher values are not necessarily better.")
             Arg::new("brute-lines")
                 .hide_short_help(true)
                 .long_help("\
-Set the number of lines to compress at once with the Brute filter strategy. Sane values \
-are 2-16. Higher values are not necessarily better.")
+Set the number of lines of context to compress at once with the Brute filter strategy. \
+Sane values are 2-16. Higher values are not necessarily better.")
                 .long("brute-lines")
                 .value_name("lines")
                 .value_parser(value_parser!(usize)),

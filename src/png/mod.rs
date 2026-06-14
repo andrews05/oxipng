@@ -358,6 +358,11 @@ impl PngImage {
         strategy: FilterStrategy,
         optimize_alpha: bool,
     ) -> (Vec<u8>, FilterStrategy) {
+        // Brute strategy is handled separately
+        if let FilterStrategy::Brute { num_lines, level } = strategy {
+            return self.filter_image_brute(num_lines, level, optimize_alpha);
+        }
+
         let mut filtered = Vec::with_capacity(self.ihdr.raw_data_size());
         let bpp = self.bytes_per_channel() * self.channels_per_pixel();
         // If alpha optimization is enabled, determine how many bytes of alpha there are per pixel
@@ -509,38 +514,6 @@ impl PngImage {
                             }
                         }
                     }
-                    FilterStrategy::Brute { num_lines, level } => {
-                        // Brute force by compressing each filter attempt
-                        // Similar to that of LodePNG but includes some previous lines for context
-                        let mut best_size = usize::MAX;
-                        let line_len = line.data.len() + 1;
-                        let line_start = filtered.len();
-                        let mut compressor =
-                            Compressor::new(CompressionLvl::new(level.into()).unwrap());
-                        let limit = (filtered.len() + line_len).min(line_len * num_lines);
-                        let capacity = compressor.deflate_compress_bound(limit);
-                        let mut dest = vec![0; capacity];
-
-                        for f in RowFilter::ALL {
-                            f.filter_line(
-                                bpp,
-                                &mut line_data,
-                                &prev_line,
-                                &mut filtered,
-                                alpha_bytes,
-                            );
-                            let size = compressor
-                                .deflate_compress(&filtered[filtered.len() - limit..], &mut dest)
-                                .unwrap_or(usize::MAX);
-                            if size < best_size {
-                                best_size = size;
-                                best_line = filtered[line_start..].to_vec();
-                                best_line_raw.clone_from(&line_data);
-                                best_filter = f;
-                            }
-                            filtered.resize(line_start, 0);
-                        }
-                    }
                     _ => unreachable!(),
                 }
                 filtered.extend_from_slice(&best_line);
@@ -554,6 +527,121 @@ impl PngImage {
         } else {
             (filtered, FilterStrategy::Predefined(filters_used))
         }
+    }
+
+    /// Apply the Brute filter strategy to the image
+    #[must_use]
+    fn filter_image_brute(
+        &self,
+        num_lines: usize,
+        level: u8,
+        optimize_alpha: bool,
+    ) -> (Vec<u8>, FilterStrategy) {
+        let mut filtered = Vec::with_capacity(self.ihdr.raw_data_size());
+        let bpp = self.bytes_per_channel() * self.channels_per_pixel();
+        // If alpha optimization is enabled, determine how many bytes of alpha there are per pixel
+        let alpha_bytes = if optimize_alpha && self.ihdr.color_type.has_alpha() {
+            self.bytes_per_channel()
+        } else {
+            0
+        };
+
+        // At level 7 and higher, use an even more intensive method of trying all combinations for
+        // two lines at time
+        let double_mode = level >= 7 && num_lines >= 2;
+
+        let mut prev_line = Vec::new();
+        let mut prev_pass: Option<u8> = None;
+        // For heuristic strategies, keep track of the actual filter used for each line
+        let mut filters_used = Vec::new();
+        // Initialize the compressor and destination buffer
+        let mut compressor = Compressor::new(CompressionLvl::new(level.into()).unwrap());
+        let row_bytes = (self.ihdr.width as usize * self.ihdr.bpp()).div_ceil(8) + 1;
+        let capacity = compressor.deflate_compress_bound(row_bytes * num_lines);
+        let mut dest = vec![0; capacity];
+
+        let mut scan_lines = self.scan_lines(false);
+        let mut next_line = scan_lines.next();
+        while let Some(line) = next_line {
+            if prev_pass != line.pass || prev_line.is_empty() {
+                prev_line = vec![0; line.data.len()];
+                prev_pass = line.pass;
+            }
+            next_line = scan_lines.next();
+            // Alpha optimisation may alter the line data, so we need a mutable copy of it
+            let mut line_data = line.data.to_vec();
+
+            let mut best_filter = RowFilter::None;
+            let mut best_filter2 = RowFilter::None;
+            if line_data.iter().all(|&x| x == 0) {
+                // Assume None if the line is all zeros
+                filtered.push(best_filter as u8);
+                filtered.extend_from_slice(&line_data);
+                prev_line = line_data;
+                filters_used.push(best_filter);
+                continue;
+            }
+
+            let mut best_line = Vec::new();
+            let mut best_line_raw = Vec::new();
+            let mut best_size = usize::MAX;
+            let line_len = line.data.len() + 1;
+            let line_start = filtered.len();
+            let mut limit = filtered.len() + line_len;
+
+            // Avoid processing two lines across interlace pass boundaries
+            let mut line2 = if double_mode
+                && let Some(l2) = &next_line
+                && l2.pass == line.pass
+            {
+                limit += line_len;
+                Some(l2.data.to_vec())
+            } else {
+                None
+            };
+
+            limit = limit.min(line_len * num_lines);
+
+            for f in RowFilter::ALL {
+                f.filter_line(bpp, &mut line_data, &prev_line, &mut filtered, alpha_bytes);
+                if let Some(line2_data) = &mut line2 {
+                    for f2 in RowFilter::ALL {
+                        f2.filter_line(bpp, line2_data, &line_data, &mut filtered, alpha_bytes);
+                        let size = compressor
+                            .deflate_compress(&filtered[filtered.len() - limit..], &mut dest)
+                            .unwrap_or(usize::MAX);
+                        if size < best_size {
+                            best_size = size;
+                            best_line = filtered[line_start..].to_vec();
+                            best_line_raw.clone_from(line2_data);
+                            best_filter = f;
+                            best_filter2 = f2;
+                        }
+                        filtered.resize(line_start + line_len, 0);
+                    }
+                } else {
+                    let size = compressor
+                        .deflate_compress(&filtered[filtered.len() - limit..], &mut dest)
+                        .unwrap_or(usize::MAX);
+                    if size < best_size {
+                        best_size = size;
+                        best_line = filtered[line_start..].to_vec();
+                        best_line_raw.clone_from(&line_data);
+                        best_filter = f;
+                    }
+                }
+                filtered.resize(line_start, 0);
+            }
+            filtered.extend_from_slice(&best_line);
+            prev_line = best_line_raw;
+            filters_used.push(best_filter);
+            if line2.is_some() {
+                filters_used.push(best_filter2);
+                next_line = scan_lines.next();
+            }
+        }
+
+        (filtered, FilterStrategy::Predefined(filters_used))
     }
 }
 

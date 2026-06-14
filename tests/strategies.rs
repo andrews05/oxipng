@@ -13,6 +13,7 @@ const RGBA: u8 = 6;
 fn get_opts(input: &Path) -> (OutFile, oxipng::Options) {
     let options = oxipng::Options {
         force: true,
+        interlace: None,
         ..Default::default()
     };
     (OutFile::from_path(input.with_extension("out.png")), options)
@@ -118,5 +119,35 @@ fn filter_brute() {
         BitDepth::Eight,
         INDEXED,
         BitDepth::Eight,
+    );
+}
+
+#[test]
+fn filter_brute2() {
+    test_it_converts(
+        "tests/files/rgba_8_should_be_palette_8.png",
+        FilterStrategy::Brute {
+            num_lines: 4,
+            level: 7,
+        },
+        RGBA,
+        BitDepth::Eight,
+        INDEXED,
+        BitDepth::Eight,
+    );
+}
+
+#[test]
+fn filter_brute2_interlaced() {
+    test_it_converts(
+        "tests/files/interlaced_small_files.png",
+        FilterStrategy::Brute {
+            num_lines: 4,
+            level: 7,
+        },
+        INDEXED,
+        BitDepth::Eight,
+        INDEXED,
+        BitDepth::One,
     );
 }
