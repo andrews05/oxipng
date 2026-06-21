@@ -101,7 +101,6 @@ impl RowFilter {
             self.optimize_alpha(bpp, data, prev_line, bpp - alpha_bytes);
         }
 
-        buf.clear();
         buf.reserve(data.len() + 1);
         buf.push(self as u8);
         match self {
