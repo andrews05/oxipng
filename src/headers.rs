@@ -115,14 +115,12 @@ pub struct RawChunk<'a> {
 impl RawChunk<'_> {
     // Is it a chunk for C2PA/CAI JUMBF metadata
     pub(crate) fn is_c2pa(&self) -> bool {
-        if self.name == *b"caBX" {
-            if let Some((b"jumb", data)) = parse_jumbf_box(self.data) {
-                if let Some((b"jumd", data)) = parse_jumbf_box(data) {
-                    if data.get(..4) == Some(b"c2pa") {
-                        return true;
-                    }
-                }
-            }
+        if self.name == *b"caBX"
+            && let Some((b"jumb", data)) = parse_jumbf_box(self.data)
+            && let Some((b"jumd", data)) = parse_jumbf_box(data)
+            && data.get(..4) == Some(b"c2pa")
+        {
+            return true;
         }
         false
     }
