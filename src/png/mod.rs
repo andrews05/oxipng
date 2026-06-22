@@ -362,6 +362,12 @@ impl PngImage {
         if let FilterStrategy::Brute { num_lines, level } = strategy {
             return self.filter_image_brute(num_lines, level, optimize_alpha);
         }
+        if matches!(strategy, FilterStrategy::BigEnt) {
+            return self.filter_image_bigent(optimize_alpha);
+        }
+        if matches!(strategy, FilterStrategy::Bigrams) {
+            return self.filter_image_bigrams(optimize_alpha);
+        }
 
         let mut filtered = Vec::with_capacity(self.ihdr.raw_data_size());
         let bpp = self.bytes_per_channel() * self.channels_per_pixel();
@@ -377,12 +383,6 @@ impl PngImage {
         let mut f_buf = Vec::new();
         // For heuristic strategies, keep track of the actual filter used for each line
         let mut filters_used = Vec::new();
-        // Pre-allocate buffers for the Bigrams strategy to avoid per-line allocations
-        let (mut bigram_seen, mut bigram_touched) = if matches!(strategy, FilterStrategy::Bigrams) {
-            (vec![false; 0x10000], Vec::<u16>::new())
-        } else {
-            (Vec::new(), Vec::new())
-        };
         for (i, line) in self.scan_lines(false).enumerate() {
             if prev_pass != line.pass || prev_line.is_empty() {
                 prev_line = vec![0; line.data.len()];
@@ -460,60 +460,6 @@ impl PngImage {
                             }
                         }
                     }
-                    FilterStrategy::Bigrams => {
-                        // Count distinct bigrams, from pngwolf
-                        // https://bjoern.hoehrmann.de/pngwolf/
-                        let mut best_size = usize::MAX;
-                        for f in RowFilter::ALL {
-                            f_buf.clear();
-                            f.filter_line(bpp, &mut line_data, &prev_line, &mut f_buf, alpha_bytes);
-                            let mut count = 0;
-                            for pair in f_buf.windows(2) {
-                                let bigram = ((pair[0] as usize) << 8) | pair[1] as usize;
-                                if !bigram_seen[bigram] {
-                                    count += 1;
-                                    if count >= best_size {
-                                        break;
-                                    }
-                                    bigram_seen[bigram] = true;
-                                    bigram_touched.push(bigram as u16);
-                                }
-                            }
-                            if count < best_size {
-                                best_size = count;
-                                std::mem::swap(&mut best_line, &mut f_buf);
-                                best_line_raw.clone_from(&line_data);
-                                best_filter = f;
-                            }
-                            // Clear only the entries that were touched
-                            for &idx in &bigram_touched {
-                                bigram_seen[idx as usize] = false;
-                            }
-                            bigram_touched.clear();
-                        }
-                    }
-                    FilterStrategy::BigEnt => {
-                        // Bigram entropy, combined from Entropy and Bigrams filters
-                        let mut best_size = i32::MIN;
-                        // FxHasher is the fastest rust hasher currently available for this purpose
-                        let mut counts = FxHashMap::<u16, u32>::default();
-                        for f in RowFilter::ALL {
-                            f_buf.clear();
-                            f.filter_line(bpp, &mut line_data, &prev_line, &mut f_buf, alpha_bytes);
-                            counts.clear();
-                            for pair in f_buf.windows(2) {
-                                let bigram = (u16::from(pair[0]) << 8) | u16::from(pair[1]);
-                                counts.entry(bigram).and_modify(|e| *e += 1).or_insert(1);
-                            }
-                            let size = counts.values().fold(0, |acc, &x| acc + ilog2i(x)) as i32;
-                            if size > best_size {
-                                best_size = size;
-                                std::mem::swap(&mut best_line, &mut f_buf);
-                                best_line_raw.clone_from(&line_data);
-                                best_filter = f;
-                            }
-                        }
-                    }
                     _ => unreachable!(),
                 }
                 filtered.extend_from_slice(&best_line);
@@ -527,6 +473,253 @@ impl PngImage {
         } else {
             (filtered, FilterStrategy::Predefined(filters_used))
         }
+    }
+
+    /// Apply the Bigrams filter strategy to the image
+    #[must_use]
+    fn filter_image_bigrams(
+        &self,
+        optimize_alpha: bool,
+    ) -> (Vec<u8>, FilterStrategy) {
+        let mut filtered = Vec::with_capacity(self.ihdr.raw_data_size());
+        let bpp = self.bytes_per_channel() * self.channels_per_pixel();
+        // If alpha optimization is enabled, determine how many bytes of alpha there are per pixel
+        let alpha_bytes = if optimize_alpha && self.ihdr.color_type.has_alpha() {
+            self.bytes_per_channel()
+        } else {
+            0
+        };
+
+        let context_lines = 1;
+        let double_mode = false;
+
+        let mut prev_line = Vec::new();
+        let mut prev_pass: Option<u8> = None;
+        // For heuristic strategies, keep track of the actual filter used for each line
+        let mut filters_used = Vec::new();
+        // Initialize bigram tracking vectors
+        let mut bigram_seen = vec![false; 0x10000];
+        let mut bigram_touched = Vec::<u16>::new();
+
+        let mut scan_lines = self.scan_lines(false);
+        let mut next_line = scan_lines.next();
+        while let Some(line) = next_line {
+            if prev_pass != line.pass || prev_line.is_empty() {
+                prev_line = vec![0; line.data.len()];
+                prev_pass = line.pass;
+            }
+            next_line = scan_lines.next();
+            // Alpha optimisation may alter the line data, so we need a mutable copy of it
+            let mut line_data = line.data.to_vec();
+
+            let mut best_filter = RowFilter::None;
+            let mut best_filter2 = RowFilter::None;
+            if line_data.iter().all(|&x| x == 0) {
+                // Assume None if the line is all zeros
+                filtered.push(best_filter as u8);
+                filtered.extend_from_slice(&line_data);
+                prev_line = line_data;
+                filters_used.push(best_filter);
+                continue;
+            }
+
+            let mut best_line = Vec::new();
+            let mut best_line_raw = Vec::new();
+            let mut best_size = usize::MAX;
+            let line_len = line.data.len() + 1;
+            let line_start = filtered.len();
+            let limit = line_start.saturating_sub(line_len * context_lines);
+
+            // Avoid processing two lines across interlace pass boundaries
+            let mut line2 = if double_mode
+                && let Some(l2) = &next_line
+                && l2.pass == line.pass
+            {
+                Some(l2.data.to_vec())
+            } else {
+                None
+            };
+
+            for f in RowFilter::ALL {
+                f.filter_line(bpp, &mut line_data, &prev_line, &mut filtered, alpha_bytes);
+                if let Some(line2_data) = &mut line2 {
+                    for f2 in RowFilter::ALL {
+                        f.filter_line(bpp, line2_data, &line_data, &mut filtered, alpha_bytes);
+                        let mut count = 0;
+                        for pair in filtered[limit..].windows(2) {
+                            let bigram = ((pair[0] as usize) << 8) | pair[1] as usize;
+                            if !bigram_seen[bigram] {
+                                count += 1;
+                                if count >= best_size {
+                                    break;
+                                }
+                                bigram_seen[bigram] = true;
+                                bigram_touched.push(bigram as u16);
+                            }
+                        }
+                        if count < best_size {
+                            best_size = count;
+                            best_line = filtered[line_start..].to_vec();
+                            best_line_raw.clone_from(line2_data);
+                            best_filter = f;
+                            best_filter2 = f2;
+                        }
+                        // Clear only the entries that were touched
+                        for &idx in &bigram_touched {
+                            bigram_seen[idx as usize] = false;
+                        }
+                        bigram_touched.clear();
+                        filtered.resize(line_start + line_len, 0);
+                    }
+                } else {
+                    let mut count = 0;
+                    for pair in filtered[limit..].windows(2) {
+                        let bigram = ((pair[0] as usize) << 8) | pair[1] as usize;
+                        if !bigram_seen[bigram] {
+                            count += 1;
+                            if count >= best_size {
+                                break;
+                            }
+                            bigram_seen[bigram] = true;
+                            bigram_touched.push(bigram as u16);
+                        }
+                    }
+                    if count < best_size {
+                        best_size = count;
+                        best_line = filtered[line_start..].to_vec();
+                        best_line_raw.clone_from(&line_data);
+                        best_filter = f;
+                    }
+                    // Clear only the entries that were touched
+                    for &idx in &bigram_touched {
+                        bigram_seen[idx as usize] = false;
+                    }
+                    bigram_touched.clear();
+                }
+                filtered.resize(line_start, 0);
+            }
+            filtered.extend_from_slice(&best_line);
+            prev_line = best_line_raw;
+            filters_used.push(best_filter);
+            if line2.is_some() {
+                filters_used.push(best_filter2);
+                next_line = scan_lines.next();
+            }
+        }
+
+        (filtered, FilterStrategy::Predefined(filters_used))
+    }
+
+    /// Apply the BigEnt filter strategy to the image
+    #[must_use]
+    fn filter_image_bigent(
+        &self,
+        optimize_alpha: bool,
+    ) -> (Vec<u8>, FilterStrategy) {
+        let mut filtered = Vec::with_capacity(self.ihdr.raw_data_size());
+        let bpp = self.bytes_per_channel() * self.channels_per_pixel();
+        // If alpha optimization is enabled, determine how many bytes of alpha there are per pixel
+        let alpha_bytes = if optimize_alpha && self.ihdr.color_type.has_alpha() {
+            self.bytes_per_channel()
+        } else {
+            0
+        };
+
+        let context_lines = 0;
+        let double_mode = true;
+
+        let mut prev_line = Vec::new();
+        let mut prev_pass: Option<u8> = None;
+        // For heuristic strategies, keep track of the actual filter used for each line
+        let mut filters_used = Vec::new();
+        // FxHasher is the fastest rust hasher currently available for this purpose
+        let mut counts = FxHashMap::<u16, u32>::default();
+
+        let mut scan_lines = self.scan_lines(false);
+        let mut next_line = scan_lines.next();
+        while let Some(line) = next_line {
+            if prev_pass != line.pass || prev_line.is_empty() {
+                prev_line = vec![0; line.data.len()];
+                prev_pass = line.pass;
+            }
+            next_line = scan_lines.next();
+            // Alpha optimisation may alter the line data, so we need a mutable copy of it
+            let mut line_data = line.data.to_vec();
+
+            let mut best_filter = RowFilter::None;
+            let mut best_filter2 = RowFilter::None;
+            if line_data.iter().all(|&x| x == 0) {
+                // Assume None if the line is all zeros
+                filtered.push(best_filter as u8);
+                filtered.extend_from_slice(&line_data);
+                prev_line = line_data;
+                filters_used.push(best_filter);
+                continue;
+            }
+
+            let mut best_line = Vec::new();
+            let mut best_line_raw = Vec::new();
+            let mut best_size = i32::MIN;
+            let line_len = line.data.len() + 1;
+            let line_start = filtered.len();
+            let limit = line_start.saturating_sub(line_len * context_lines);
+
+            // Avoid processing two lines across interlace pass boundaries
+            let mut line2 = if double_mode
+                && let Some(l2) = &next_line
+                && l2.pass == line.pass
+            {
+                Some(l2.data.to_vec())
+            } else {
+                None
+            };
+
+            for f in RowFilter::ALL {
+                f.filter_line(bpp, &mut line_data, &prev_line, &mut filtered, alpha_bytes);
+                if let Some(line2_data) = &mut line2 {
+                    for f2 in RowFilter::ALL {
+                        f.filter_line(bpp, line2_data, &line_data, &mut filtered, alpha_bytes);
+                        counts.clear();
+                        for pair in filtered[limit..].windows(2) {
+                            let bigram = (u16::from(pair[0]) << 8) | u16::from(pair[1]);
+                            counts.entry(bigram).and_modify(|e| *e += 1).or_insert(1);
+                        }
+                        let size = counts.values().fold(0, |acc, &x| acc + ilog2i(x)) as i32;
+                        if size > best_size {
+                            best_size = size;
+                            best_line = filtered[line_start..].to_vec();
+                            best_line_raw.clone_from(line2_data);
+                            best_filter = f;
+                            best_filter2 = f2;
+                        }
+                        filtered.resize(line_start + line_len, 0);
+                    }
+                } else {
+                    counts.clear();
+                    for pair in filtered[limit..].windows(2) {
+                        let bigram = (u16::from(pair[0]) << 8) | u16::from(pair[1]);
+                        counts.entry(bigram).and_modify(|e| *e += 1).or_insert(1);
+                    }
+                    let size = counts.values().fold(0, |acc, &x| acc + ilog2i(x)) as i32;
+                    if size > best_size {
+                        best_size = size;
+                        best_line = filtered[line_start..].to_vec();
+                        best_line_raw.clone_from(&line_data);
+                        best_filter = f;
+                    }
+                }
+                filtered.resize(line_start, 0);
+            }
+            filtered.extend_from_slice(&best_line);
+            prev_line = best_line_raw;
+            filters_used.push(best_filter);
+            if line2.is_some() {
+                filters_used.push(best_filter2);
+                next_line = scan_lines.next();
+            }
+        }
+
+        (filtered, FilterStrategy::Predefined(filters_used))
     }
 
     /// Apply the Brute filter strategy to the image
