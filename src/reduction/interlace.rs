@@ -1,32 +1,42 @@
-use crate::{headers::IhdrData, png::PngImage, reduction::bit_depth::*};
+use std::borrow::Cow;
 
-/// Enable or disable interlacing, returning the new image if it was changed
+use crate::{headers::Orientation, png::PngImage, reduction::bit_depth::*};
+
+/// Change interlacing or orientation, returning the new image if it was changed.
+///
+/// These two transforms are combined since reorientation must occur after deinterlacing but before
+/// interlacing.
 #[must_use]
-pub fn changed_interlacing(png: &PngImage, interlace: bool) -> Option<PngImage> {
-    if interlace == png.ihdr.interlaced {
+pub fn restructured(png: &PngImage, interlace: Option<bool>, reorient: bool) -> Option<PngImage> {
+    // Check if anything needs to be done
+    let interlace = interlace.unwrap_or(png.ihdr.interlaced);
+    let reorient = reorient && png.ihdr.orientation != Orientation::Normal;
+    if interlace == png.ihdr.interlaced && !reorient {
         return None;
     }
 
-    // Performing the transformation at the bit level can be complex and inefficient, so we only
+    // Performing the transformations at the bit level can be complex and inefficient, so we only
     // directly support 8-bit and higher. A low depth image would normally already be expanded to 8
     // when we run this, but if depth reductions were disabled we can just expand it temporarily
     // and then revert back again afterward (it's still very fast).
     let orig_depth = png.ihdr.bit_depth;
-    let expanded = expanded_bit_depth_to_8(png);
-    let png = expanded.as_ref().unwrap_or(png);
-    let data = if interlace {
-        interlace_bytes(png)
-    } else {
-        deinterlace_bytes(png)
-    };
-    let mut new = PngImage {
-        data,
-        ihdr: IhdrData {
-            color_type: png.ihdr.color_type.clone(),
-            interlaced: interlace,
-            ..png.ihdr
-        },
-    };
+    let mut png = Cow::Borrowed(png);
+    if let Some(expanded) = expanded_bit_depth_to_8(&png) {
+        png = Cow::Owned(expanded);
+    }
+
+    // Image must be deinterlaced to change orientation (we will reinterlace afterward if required)
+    if png.ihdr.interlaced && (!interlace || reorient) {
+        deinterlace_bytes(png.to_mut());
+    }
+    if reorient {
+        reorient_image(png.to_mut());
+    }
+    if interlace {
+        interlace_bytes(png.to_mut());
+    }
+
+    let mut new = png.into_owned();
     // Reduce back to original depth
     if new.ihdr.bit_depth != orig_depth {
         new = reduced_bit_depth_forced(&new, orig_depth);
@@ -35,9 +45,9 @@ pub fn changed_interlacing(png: &PngImage, interlace: bool) -> Option<PngImage> 
 }
 
 /// Interlace by bytes, for images with at least 8bpp
-fn interlace_bytes(png: &PngImage) -> Vec<u8> {
+fn interlace_bytes(png: &mut PngImage) {
     let bytes_per_pixel = png.ihdr.bpp() / 8;
-    match bytes_per_pixel {
+    png.data = match bytes_per_pixel {
         1 => interlace_bytes_const::<1>(png),
         2 => interlace_bytes_const::<2>(png),
         3 => interlace_bytes_const::<3>(png),
@@ -45,7 +55,8 @@ fn interlace_bytes(png: &PngImage) -> Vec<u8> {
         6 => interlace_bytes_const::<6>(png),
         8 => interlace_bytes_const::<8>(png),
         _ => unreachable!(),
-    }
+    };
+    png.ihdr.interlaced = true;
 }
 
 // Delegate function with const generics for performance
@@ -69,9 +80,9 @@ fn interlace_bytes_const<const BPP: usize>(png: &PngImage) -> Vec<u8> {
 }
 
 /// Deinterlace by bytes, for images with at least 8bpp
-fn deinterlace_bytes(png: &PngImage) -> Vec<u8> {
+fn deinterlace_bytes(png: &mut PngImage) {
     let bytes_per_pixel = png.ihdr.bpp() / 8;
-    match bytes_per_pixel {
+    png.data = match bytes_per_pixel {
         1 => deinterlace_bytes_const::<1>(png),
         2 => deinterlace_bytes_const::<2>(png),
         3 => deinterlace_bytes_const::<3>(png),
@@ -79,7 +90,8 @@ fn deinterlace_bytes(png: &PngImage) -> Vec<u8> {
         6 => deinterlace_bytes_const::<6>(png),
         8 => deinterlace_bytes_const::<8>(png),
         _ => unreachable!(),
-    }
+    };
+    png.ihdr.interlaced = false;
 }
 
 // Delegate function with const generics for performance
@@ -184,4 +196,141 @@ const fn interlaced_constants(pass: u8) -> InterlacedConstants {
         },
         _ => unreachable!(),
     }
+}
+
+/// Reorient the image according to its orientation
+fn reorient_image(png: &mut PngImage) {
+    match png.ihdr.orientation {
+        Orientation::Normal => {}
+        Orientation::FlipH => {
+            png.data = flip_horizontal(png);
+        }
+        Orientation::Rot180 => {
+            png.data = rotate_180(png);
+        }
+        Orientation::FlipV => {
+            png.data = flip_vertical(png);
+        }
+        Orientation::FlipHRot270 => {
+            png.data = flip_horizontal_rotate_270(png);
+            std::mem::swap(&mut png.ihdr.width, &mut png.ihdr.height);
+        }
+        Orientation::Rot90 => {
+            png.data = rotate_90(png);
+            std::mem::swap(&mut png.ihdr.width, &mut png.ihdr.height);
+        }
+        Orientation::FlipHRot90 => {
+            png.data = flip_horizontal_rotate_90(png);
+            std::mem::swap(&mut png.ihdr.width, &mut png.ihdr.height);
+        }
+        Orientation::Rot270 => {
+            png.data = rotate_270(png);
+            std::mem::swap(&mut png.ihdr.width, &mut png.ihdr.height);
+        }
+    }
+    png.ihdr.orientation = Orientation::Normal;
+}
+
+fn flip_horizontal(png: &mut PngImage) -> Vec<u8> {
+    let w = png.ihdr.width as usize;
+    let bytes_per_pixel = png.ihdr.bpp() / 8;
+    let line_len = bytes_per_pixel * w;
+    let mut data = vec![0; png.data.len()];
+    for (y, line) in png.data.chunks_exact(line_len).enumerate() {
+        for (x, pixel) in line.chunks_exact(bytes_per_pixel).enumerate() {
+            let index = y * line_len + (w - x - 1) * bytes_per_pixel;
+            data[index..(index + bytes_per_pixel)].copy_from_slice(pixel);
+        }
+    }
+    data
+}
+
+fn rotate_180(png: &mut PngImage) -> Vec<u8> {
+    let w = png.ihdr.width as usize;
+    let h = png.ihdr.height as usize;
+    let bytes_per_pixel = png.ihdr.bpp() / 8;
+    let line_len = bytes_per_pixel * w;
+    let mut data = vec![0; png.data.len()];
+    for (y, line) in png.data.chunks_exact(line_len).enumerate() {
+        for (x, pixel) in line.chunks_exact(bytes_per_pixel).enumerate() {
+            let index = (h - y - 1) * line_len + (w - x - 1) * bytes_per_pixel;
+            data[index..(index + bytes_per_pixel)].copy_from_slice(pixel);
+        }
+    }
+    data
+}
+
+fn flip_vertical(png: &mut PngImage) -> Vec<u8> {
+    let bytes_per_pixel = png.ihdr.bpp() / 8;
+    let line_len = bytes_per_pixel * png.ihdr.width as usize;
+    png.data
+        .chunks_exact(line_len)
+        .rev()
+        .flatten()
+        .copied()
+        .collect()
+}
+
+fn flip_horizontal_rotate_270(png: &mut PngImage) -> Vec<u8> {
+    let w = png.ihdr.width as usize;
+    let h = png.ihdr.height as usize;
+    let bytes_per_pixel = png.ihdr.bpp() / 8;
+    let line_len = bytes_per_pixel * w;
+    let new_line_len = bytes_per_pixel * h;
+    let mut data = vec![0; png.data.len()];
+    for (y, line) in png.data.chunks_exact(line_len).enumerate() {
+        for (x, pixel) in line.chunks_exact(bytes_per_pixel).enumerate() {
+            let index = x * new_line_len + y * bytes_per_pixel;
+            data[index..(index + bytes_per_pixel)].copy_from_slice(pixel);
+        }
+    }
+    data
+}
+
+fn rotate_90(png: &mut PngImage) -> Vec<u8> {
+    let w = png.ihdr.width as usize;
+    let h = png.ihdr.height as usize;
+    let bytes_per_pixel = png.ihdr.bpp() / 8;
+    let line_len = bytes_per_pixel * w;
+    let new_line_len = bytes_per_pixel * h;
+    let mut data = vec![0; png.data.len()];
+    for (y, line) in png.data.chunks_exact(line_len).enumerate() {
+        for (x, pixel) in line.chunks_exact(bytes_per_pixel).enumerate() {
+            let index = x * new_line_len + (h - y - 1) * bytes_per_pixel;
+            data[index..(index + bytes_per_pixel)].copy_from_slice(pixel);
+        }
+    }
+    data
+}
+
+fn flip_horizontal_rotate_90(png: &mut PngImage) -> Vec<u8> {
+    let w = png.ihdr.width as usize;
+    let h = png.ihdr.height as usize;
+    let bytes_per_pixel = png.ihdr.bpp() / 8;
+    let line_len = bytes_per_pixel * w;
+    let new_line_len = bytes_per_pixel * h;
+    let mut data = vec![0; png.data.len()];
+    for (y, line) in png.data.chunks_exact(line_len).enumerate() {
+        for (x, pixel) in line.chunks_exact(bytes_per_pixel).enumerate() {
+            let index = (w - x - 1) * new_line_len + (h - y - 1) * bytes_per_pixel;
+            data[index..(index + bytes_per_pixel)].copy_from_slice(pixel);
+        }
+    }
+    data
+}
+
+fn rotate_270(png: &mut PngImage) -> Vec<u8> {
+    let w = png.ihdr.width as usize;
+    let h = png.ihdr.height as usize;
+    let bytes_per_pixel = png.ihdr.bpp() / 8;
+    let line_len = bytes_per_pixel * w;
+    let new_line_len = bytes_per_pixel * h;
+    let mut data = vec![0; png.data.len()];
+    for (y, line) in png.data.chunks_exact(line_len).enumerate() {
+        for (x, pixel) in line.chunks_exact(bytes_per_pixel).enumerate() {
+            let index = (w - x - 1) * new_line_len + y * bytes_per_pixel;
+            data[index..(index + bytes_per_pixel)].copy_from_slice(pixel);
+        }
+    }
+    data
 }

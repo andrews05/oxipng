@@ -66,6 +66,7 @@ impl PngData {
         let mut aux_chunks: Vec<Chunk> = Vec::new();
         let mut frames: Vec<Frame> = Vec::new();
         let mut sequence_number = 0;
+        let mut orientation = Orientation::Normal;
         while let Some(chunk) = parse_next_chunk(byte_data, &mut byte_offset, opts.fix_errors)? {
             match &chunk.name {
                 b"IDAT" => {
@@ -121,6 +122,10 @@ impl PngData {
                         data: chunk.data.to_owned(),
                     });
                 }
+                b"eXIf" => {
+                    // EXIF is being stripped - get the orientation so we can correct the image
+                    orientation = get_exif_orientation(chunk.data).unwrap_or(orientation);
+                }
                 b"acTL" => {
                     warn!("Stripping animation data from APNG - image will become standard PNG");
                 }
@@ -139,6 +144,7 @@ impl PngData {
             &ihdr_chunk,
             key_chunks.remove(b"PLTE"),
             key_chunks.remove(b"tRNS"),
+            orientation,
         )?;
         if let Some(max) = opts.max_decompressed_size
             && ihdr.raw_data_size() > max

@@ -13,7 +13,7 @@ fn interlacing_16_bits(b: &mut Bencher) {
     let input = test::black_box(PathBuf::from("tests/files/rgb_16_should_be_rgb_16.png"));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, true));
+    b.iter(|| interlace::restructured(&png.raw, Some(true), false));
 }
 
 #[bench]
@@ -21,7 +21,7 @@ fn interlacing_8_bits(b: &mut Bencher) {
     let input = test::black_box(PathBuf::from("tests/files/rgb_8_should_be_rgb_8.png"));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, true));
+    b.iter(|| interlace::restructured(&png.raw, Some(true), false));
 }
 
 #[bench]
@@ -31,7 +31,7 @@ fn interlacing_4_bits(b: &mut Bencher) {
     ));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, true));
+    b.iter(|| interlace::restructured(&png.raw, Some(true), false));
 }
 
 #[bench]
@@ -41,7 +41,7 @@ fn interlacing_2_bits(b: &mut Bencher) {
     ));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, true));
+    b.iter(|| interlace::restructured(&png.raw, Some(true), false));
 }
 
 #[bench]
@@ -51,7 +51,7 @@ fn interlacing_1_bits(b: &mut Bencher) {
     ));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, true));
+    b.iter(|| interlace::restructured(&png.raw, Some(true), false));
 }
 
 #[bench]
@@ -61,7 +61,7 @@ fn deinterlacing_16_bits(b: &mut Bencher) {
     ));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, false));
+    b.iter(|| interlace::restructured(&png.raw, Some(false), false));
 }
 
 #[bench]
@@ -71,7 +71,7 @@ fn deinterlacing_8_bits(b: &mut Bencher) {
     ));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, false));
+    b.iter(|| interlace::restructured(&png.raw, Some(false), false));
 }
 
 #[bench]
@@ -81,7 +81,7 @@ fn deinterlacing_4_bits(b: &mut Bencher) {
     ));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, false));
+    b.iter(|| interlace::restructured(&png.raw, Some(false), false));
 }
 
 #[bench]
@@ -91,7 +91,7 @@ fn deinterlacing_2_bits(b: &mut Bencher) {
     ));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, false));
+    b.iter(|| interlace::restructured(&png.raw, Some(false), false));
 }
 
 #[bench]
@@ -101,5 +101,5 @@ fn deinterlacing_1_bits(b: &mut Bencher) {
     ));
     let png = PngData::new(&input, &Options::default()).unwrap();
 
-    b.iter(|| interlace::changed_interlacing(&png.raw, false));
+    b.iter(|| interlace::restructured(&png.raw, Some(false), false));
 }

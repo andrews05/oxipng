@@ -113,6 +113,7 @@ impl RawImage {
                     color_type,
                     bit_depth,
                     interlaced: false,
+                    orientation: Orientation::Normal,
                 },
                 data,
             }),

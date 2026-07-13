@@ -1,6 +1,8 @@
 use indexmap::IndexSet;
 use log::{debug, trace, warn};
+use rexif::ExifTag;
 use rgb::{RGB16, RGBA8};
+use std::mem::transmute;
 
 use crate::{
     Deflater, Options, PngResult,
@@ -23,6 +25,8 @@ pub struct IhdrData {
     pub bit_depth: BitDepth,
     /// Whether the image is interlaced
     pub interlaced: bool,
+    /// The image orientation (from tag in eXIf chunk, not actually in IHDR)
+    pub orientation: Orientation,
 }
 
 impl IhdrData {
@@ -102,6 +106,30 @@ impl StripChunks {
     }
 }
 
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Orientation {
+    Normal = 1,
+    FlipH = 2,
+    Rot180 = 3,
+    FlipV = 4,
+    FlipHRot270 = 5,
+    Rot90 = 6,
+    FlipHRot90 = 7,
+    Rot270 = 8,
+}
+
+impl TryFrom<i64> for Orientation {
+    type Error = ();
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        if !(1..=8).contains(&value) {
+            return Err(());
+        }
+        unsafe { transmute(value as u8) }
+    }
+}
+
 #[inline]
 pub fn file_header_is_valid(bytes: &[u8]) -> bool {
     let expected_header: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
@@ -156,6 +184,7 @@ pub fn parse_ihdr_chunk(
     byte_data: &[u8],
     palette_data: Option<Vec<u8>>,
     trns_data: Option<Vec<u8>>,
+    orientation: Orientation,
 ) -> PngResult<IhdrData> {
     // This eliminates bounds checks for the rest of the function
     let interlaced = byte_data.get(12).copied().ok_or(PngError::TruncatedData)?;
@@ -188,6 +217,7 @@ pub fn parse_ihdr_chunk(
             1 => true,
             _ => return Err(PngError::InvalidData),
         },
+        orientation,
     })
 }
 
@@ -291,6 +321,17 @@ pub fn srgb_rendering_intent(icc_data: &[u8]) -> Option<u8> {
         }
         _ => None,
     }
+}
+
+/// Get the exif orientation value, if present
+pub fn get_exif_orientation(exif_data: &[u8]) -> Option<Orientation> {
+    let exif = rexif::parse_buffer(exif_data).ok()?;
+    let tag = exif
+        .entries
+        .iter()
+        .find(|t| t.tag == ExifTag::Orientation)?;
+    let orientation = tag.value.to_i64(0)?;
+    orientation.try_into().ok()
 }
 
 /// Process aux chunks and potentially adjust options before optimizing

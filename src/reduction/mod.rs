@@ -55,17 +55,18 @@ pub(crate) fn perform_reductions(
 
     // Attempt to expand the bit depth to 8
     // This does need to be evaluated but will be done so later when it gets reduced again
-    // This should be done before interlacing for best performance
+    // This should be done before restructuring for best performance
     if opts.bit_depth_reduction
         && let Some(reduced) = expanded_bit_depth_to_8(&png)
     {
         png = Arc::new(reduced);
     }
 
-    // Interlacing must be processed before any evaluations
-    if let Some(interlacing) = opts.interlace
-        && let Some(reduced) = changed_interlacing(&png, interlacing)
-    {
+    // Restructuring must be processed before any evaluations
+    // Since we don't have a dedicated option for reorientation, allow it if any reductions are
+    // allowed (i.e. disable it if `--nx` was used).
+    let reorient = opts.bit_depth_reduction || opts.color_type_reduction || opts.palette_reduction;
+    if let Some(reduced) = restructured(&png, opts.interlace, reorient) {
         png = Arc::new(reduced);
     }
 

@@ -39,7 +39,7 @@ pub fn validate_output(output: &[u8], original_data: &[u8]) -> bool {
 
 /// Loads a PNG image from memory to frames of [RgbaImage]
 fn load_png_image_from_memory(png_data: &[u8]) -> Result<Vec<RgbaImage>, image::ImageError> {
-    let decoder = PngDecoder::new(Cursor::new(png_data))?;
+    let mut decoder = PngDecoder::new(Cursor::new(png_data))?;
     if decoder.is_apng()? {
         decoder
             .apng()?
@@ -47,7 +47,12 @@ fn load_png_image_from_memory(png_data: &[u8]) -> Result<Vec<RgbaImage>, image::
             .map(|f| f.map(image::Frame::into_buffer))
             .collect()
     } else {
-        DynamicImage::from_decoder(decoder).map(|i| vec![i.into_rgba8()])
+        let orientation = decoder.orientation();
+        let mut image = DynamicImage::from_decoder(decoder)?;
+        if let Ok(orientation) = orientation {
+            image.apply_orientation(orientation);
+        }
+        Ok(vec![image.into_rgba8()])
     }
 }
 
