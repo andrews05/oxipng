@@ -544,7 +544,7 @@ fn profile_srgb_allow_gray() {
         },
         |png| {
             assert_eq!(count_chunk(png, b"iCCP"), 0);
-            assert_eq!(count_chunk(png, b"sRGB"), 0);
+            assert_eq!(count_chunk(png, b"sRGB"), 1);
         },
     );
 }
